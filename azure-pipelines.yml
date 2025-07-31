@@ -72,3 +72,45 @@ extends:
     prodK8sDeploymentName: ''
     prodK8sServiceConnection: ''
     prodK8sContainerPort: 80
+
+    #   # Dev Environment Params (Azure Web App is ENABLED)
+    # devDeploymentType: 'azureWebApp'
+    # devAppServiceName: 'myflexibledotnetapi-dev-001'
+    # devResourceGroupName: 'rg-myflexibledotnetapi-dev'
+    # devAppUrlForTests: 'https://myflexibledotnetapi-dev-001.azurewebsites.net'
+    # devAppServerName: '' 
+    # devWinRmServiceConnection: '' 
+    # devRemotePath: '' 
+    # devK8sImageName: '' 
+    # devK8sNamespace: '' 
+    # devK8sDeploymentName: '' 
+    # devK8sServiceConnection: '' 
+    # devK8sContainerPort: 80 
+
+    # # QA Environment Params (On-Premise FCI is ENABLED)
+    # qaDeploymentType: 'onPremiseFCI'
+    # qaAppServiceName: ''
+    # qaResourceGroupName: ''
+    # qaAppUrlForTests: 'https://myflexibledotnetapi-qa-node.internal.net'
+    # qaAppServerName: 'qa-webserver.internal.net'
+    # qaWinRmServiceConnection: 'QA_OnPrem_WinRM_SC'
+    # qaRemotePath: 'C:\\inetpub\\wwwroot\\MyFlexibleDotnetApi-QA'
+    # qaK8sImageName: ''
+    # qaK8sNamespace: ''
+    # qaK8sDeploymentName: ''
+    # qaK8sServiceConnection: ''
+    # qaK8sContainerPort: 80
+
+    # # Prod Environment Params (OpenShift is ENABLED)
+    # prodDeploymentType: 'openShift'
+    # prodAppServiceName: ''
+    # prodResourceGroupName: ''
+    # prodAppUrlForTests: 'https://api-myflexibledotnetapi-prod.openshift.net'
+    # prodAppServerName: ''
+    # prodWinRmServiceConnection: ''
+    # prodRemotePath: ''
+    # prodK8sImageName: 'myacr.azurecr.io/myflexibledotnetapi:$(Build.BuildId)'
+    # prodK8sNamespace: 'myflexibledotnetapi-prod'
+    # prodK8sDeploymentName: 'myflexibledotnetapi'
+    # prodK8sServiceConnection: 'Prod_OpenShift_SC'
+    # prodK8sContainerPort: 80
