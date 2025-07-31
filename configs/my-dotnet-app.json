@@ -1,12 +1,11 @@
-// File: PlatformAutomation/configs/my-dotnet-app.json
 {
   "appName": "MyFlexibleDotNetApi",
   "repoName": "my-flexible-dotnet-api-repo",
   "repoUrl": "https://dev.azure.com/YourOrg/YourProject/_git/my-flexible-dotnet-api-repo",
   "solutionPath": "src/MyFlexibleDotNetApi/MyFlexibleDotNetApi.sln",
   "testProjectPath": "src/MyFlexibleDotNetApi.Tests/MyFlexibleDotNetApi.Tests.csproj",
-  "techStack": "DotNet",          // Defines the technology stack
-  "buildTool": "DotNetCLI",       // Defines the primary build/unit test tool
+  "techStack": "DotNet",          
+  "buildTool": "DotNetCLI",       
   "azureSubscriptionServiceConnection": "YourAzureServiceConnection",
   "agentPoolName": "Azure Pipelines",
   "environments": {

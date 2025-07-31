@@ -1,0 +1,99 @@
+{
+  "appName": "MyFlexibleDotnetApi",
+  "repoName": "my-flexible-dotnet-api-repo",
+  "solutionPath": "src/MyFlexibleDotnetApi.sln",
+  "testProjectPath": "tests/MyFlexibleDotnetApi.Tests/MyFlexibleDotnetApi.Tests.csproj",
+  "techStack": "dotnet",
+  "azureSubscriptionServiceConnection": "YOUR_AZURE_SUBSCRIPTION_SC_NAME", 
+  "agentPoolName": "Azure Pipelines", 
+  "containerRegistryServiceConnection": "YOUR_ACR_SC_NAME", 
+  "enableCI": true,
+  "enableCD": true,
+
+  "environments": {
+    "dev": {
+      "name": "Development",
+      "deploymentOptions": [
+        {
+          "type": "azureWebApp",
+          "enabled": true,
+          "appServiceName": "myflexibledotnetapi-dev",
+          "resourceGroupName": "rg-myflexibledotnetapi-dev",
+          "appUrlForTests": "https://myflexibledotnetapi-dev.azurewebsites.net"
+        },
+        {
+          "type": "onPremiseFCI",
+          "enabled": false,
+          "appServerName": "dev-webserver.yourdomain.com",
+          "winRmServiceConnection": "DevWinRmServiceConnection",
+          "remotePath": "C:\\inetpub\\wwwroot\\MyFlexibleDotnetApi-Dev"
+        },
+        {
+          "type": "openShift",
+          "enabled": false,
+          "k8sImageName": "myacr.azurecr.io/myflexibledotnetapi:$(Build.BuildId)",
+          "k8sNamespace": "myflexibledotnetapi-dev",
+          "k8sDeploymentName": "myflexibledotnetapi",
+          "k8sServiceConnection": "DevK8sServiceConnection",
+          "k8sContainerPort": 80
+        }
+      ]
+    },
+    "qa": {
+      "name": "QA",
+      "deploymentOptions": [
+        {
+          "type": "azureWebApp",
+          "enabled": true,
+          "appServiceName": "myflexibledotnetapi-qa",
+          "resourceGroupName": "rg-myflexibledotnetapi-qa",
+          "appUrlForTests": "https://myflexibledotnetapi-qa.azurewebsites.net"
+        },
+        {
+          "type": "onPremiseFCI",
+          "enabled": false,
+          "appServerName": "qa-webserver.yourdomain.com",
+          "winRmServiceConnection": "QaWinRmServiceConnection",
+          "remotePath": "C:\\inetpub\\wwwroot\\MyFlexibleDotnetApi-QA"
+        },
+        {
+          "type": "openShift",
+          "enabled": false,
+          "k8sImageName": "myacr.azurecr.io/myflexibledotnetapi:$(Build.BuildId)",
+          "k8sNamespace": "myflexibledotnetapi-qa",
+          "k8sDeploymentName": "myflexibledotnetapi",
+          "k8sServiceConnection": "QaK8sServiceConnection",
+          "k8sContainerPort": 80
+        }
+      ]
+    },
+    "prod": {
+      "name": "Production",
+      "deploymentOptions": [
+        {
+          "type": "azureWebApp",
+          "enabled": false,
+          "appServiceName": "myflexibledotnetapi-prod",
+          "resourceGroupName": "rg-myflexibledotnetapi-prod",
+          "appUrlForTests": "https://myflexibledotnetapi-prod.azurewebsites.net"
+        },
+        {
+          "type": "onPremiseFCI",
+          "enabled": false,
+          "appServerName": "prod-webserver.yourdomain.com",
+          "winRmServiceConnection": "ProdWinRmServiceConnection",
+          "remotePath": "C:\\inetpub\\wwwroot\\MyFlexibleDotnetApi-Prod"
+        },
+        {
+          "type": "openShift",
+          "enabled": false,
+          "k8sImageName": "myacr.azurecr.io/myflexibledotnetapi:$(Build.BuildId)",
+          "k8sNamespace": "myflexibledotnetapi-prod",
+          "k8sDeploymentName": "myflexibledotnetapi",
+          "k8sServiceConnection": "ProdK8sServiceConnection",
+          "k8sContainerPort": 80
+        }
+      ]
+    }
+  }
+}
