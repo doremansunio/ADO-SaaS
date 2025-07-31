@@ -1,0 +1,21 @@
+# File: PlatformAutomation/templates/shared/dotnet-test.yml
+# Shared template for .NET application test steps
+
+parameters:
+- name: testProjectPath
+  type: string
+- name: buildConfiguration # e.g., 'Release'
+  type: string
+- name: appName
+  type: string
+
+steps:
+- task: DotNetCoreCLI@2
+  displayName: 'Run Unit Tests'
+  inputs:
+    command: 'test'
+    projects: '${{ parameters.testProjectPath }}'
+    arguments: '--configuration ${{ parameters.buildConfiguration }} --collect "Code Coverage"'
+    publishTestResults: true
+    testResultsFormat: 'VSTest'
+    testRunTitle: '$(appName) Unit Tests'

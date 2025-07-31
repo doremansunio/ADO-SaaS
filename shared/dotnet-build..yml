@@ -1,0 +1,45 @@
+# File: PlatformAutomation/templates/shared/dotnet-build.yml
+# Shared template for .NET application build steps
+
+parameters:
+- name: solutionPath
+  type: string
+- name: buildConfiguration # e.g., 'Release'
+  type: string
+- name: appName
+  type: string
+- name: containerRegistryServiceConnection # Optional, for container builds
+  type: string
+  default: ''
+
+steps:
+- task: UseDotNet@2
+  displayName: 'Use .NET SDK 8.x'
+  inputs:
+    version: '8.x'
+
+- task: DotNetCoreCLI@2
+  displayName: 'Restore NuGet Packages'
+  inputs:
+    command: 'restore'
+    projects: '${{ parameters.solutionPath }}'
+    feedsToUse: 'config' # or 'select', 'enablegpr' for private feeds
+
+- task: DotNetCoreCLI@2
+  displayName: 'Build .NET Application'
+  inputs:
+    command: 'build'
+    projects: '${{ parameters.solutionPath }}'
+    arguments: '--configuration ${{ parameters.buildConfiguration }}'
+
+- ${{ if and(ne(parameters.containerRegistryServiceConnection, ''), contains(parameters.appName, 'api')) }}:
+  - task: Docker@2
+    displayName: 'Build and Push Docker Image'
+    inputs:
+      command: 'buildAndPush'
+      repository: '${{ parameters.appName }}' # Your repo name in ACR, e.g., 'myflexibledotnetapi'
+      dockerfile: '$(Build.SourcesDirectory)/Dockerfile' # Assuming Dockerfile at root
+      containerRegistry: '${{ parameters.containerRegistryServiceConnection }}'
+      tags: |
+        $(Build.BuildId)
+        latest # Be cautious with 'latest' in production

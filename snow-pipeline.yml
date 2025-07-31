@@ -1,469 +1,257 @@
 # File: PlatformAutomation/meta-pipeline.yml
-#
-# This meta-pipeline is responsible for orchestrating the onboarding and
-# configuration of new applications within the platform. It reads an application's
-# desired state from a JSON configuration file and generates/updates its
-# corresponding Azure DevOps CI/CD pipeline in the application's own repository.
-#
-# Key Responsibilities:
-# - Reads application configuration from a specified JSON file.
-# - Clones the application's repository.
-# - Generates an application-specific Azure Pipelines YAML file (.azuredevops/azure-pipelines.yml)
-#   which extends a standardized template from this platform repository.
-# - Commits and pushes the generated pipeline file to the application's repository.
-# - Creates or updates the Azure DevOps pipeline definition.
-# - Registers onboarding metrics for tracking.
+# This pipeline runs to onboard or update application CI/CD configurations.
+
+name: $(Date:yyyyMMdd)$(Rev:.r) # Standard pipeline naming convention
 
 trigger:
-  # Trigger this pipeline when changes are pushed to 'main' branch
-  # within the meta-pipeline's own files or templates/configs.
-  batch: true
   branches:
     include:
-      - main
-  paths:
-    include:
-      - meta-pipeline.yml
-      - templates/ # Changes to templates might require updating app pipelines
-      - configs/   # New app configs or updates to existing ones
+      - main # Trigger on changes to the main branch of this repo
 
 pr:
-  # Run this pipeline on Pull Requests targeting 'main' or feature branches
-  # to validate changes to the meta-pipeline or templates/configs before merge.
   branches:
     include:
       - main
-      - features/*
-    paths:
-      include:
-        - meta-pipeline.yml
-        - templates/
-        - configs/
 
 parameters:
-# Input parameter for the meta-pipeline, allowing selection of which application
-# configuration to process.
 - name: appConfigFilePath
-  displayName: 'Path to Application Configuration JSON file (e.g., configs/my-dotnet-app.json)'
+  displayName: 'Path to Application Configuration JSON'
   type: string
-  default: 'configs/my-dotnet-app.json' # Default path to a sample config
-
-variables:
-  # Variables defining paths and names within the platform automation setup.
-  platformRepoName: '$(Build.Repository.Name)' # Name of this platform automation repository.
-  platformRepoUrl: '$(Build.Repository.Uri)' # URI of this platform automation repository.
-  platformTemplatePath: 'templates/dotnet-ci-cd.yml' # Relative path to the standard CI/CD template.
-  appPipelineYamlPath: '.azuredevops/azure-pipelines.yml' # Standard path for the generated app pipeline YAML.
-  appParamsJsonPath: 'config/params.json' # Path for the generated JSON parameters file in app repo.
-
-pool:
-  # Agent pool where the meta-pipeline itself will run.
-  vmImage: 'ubuntu-latest' # Using a Microsoft-hosted agent for simplicity.
+  default: 'configs/my-flexible-dotnet-api.json' # Default path for an example app config
+  values:
+  - 'configs/my-flexible-dotnet-api.json' # Example value, you'd add more for different apps
 
 jobs:
 - job: OnboardApplication
-  displayName: 'Onboard Application from Config'
+  displayName: 'Onboard/Update Application CI/CD'
+  pool:
+    name: Azure Pipelines # Use a Microsoft-hosted agent
+
   steps:
-  - checkout: self # Checkout the platform automation repository itself.
+  - checkout: self # Checkout the PlatformAutomation repository
 
   - task: PowerShell@2
     displayName: 'Install Azure DevOps CLI Extension'
     inputs:
       targetType: 'inline'
       script: |
-        # Ensure Azure DevOps CLI extension is installed for pipeline management tasks.
-        az extension add --name azure-devops
-        Write-Host "Azure DevOps CLI extension installed."
+        az extension add --name azure-devops --yes
+    env:
+      AZURE_DEVOPS_EXT_PAT: $(System.AccessToken) # Use System.AccessToken for CLI authentication
 
   - task: PowerShell@2
     displayName: 'Read Application Configuration and Prepare Repository'
     inputs:
       targetType: 'inline'
       script: |
-        # Read the specified application configuration JSON file.
-        $configFilePath = "${{ parameters.appConfigFilePath }}"
-        Write-Host "Reading application configuration from: $configFilePath"
+        $ErrorActionPreference = "Stop" # Stop on errors
 
-        if (!(Test-Path $configFilePath)) {
-            Write-Error "Configuration file not found at $configFilePath."
+        $appConfigFilePath = "${{ parameters.appConfigFilePath }}"
+        Write-Host "Attempting to read application configuration from: $appConfigFilePath"
+
+        if (-not (Test-Path $appConfigFilePath)) {
+            Write-Error "Application configuration file not found at $appConfigFilePath"
             exit 1
         }
 
-        $appConfig = Get-Content $configFilePath | ConvertFrom-Json
+        $appConfig = Get-Content $appConfigFilePath | ConvertFrom-Json
+        Write-Host "Successfully read application configuration for $($appConfig.appName)"
 
-        # Set pipeline variables from the JSON config for use in subsequent steps.
+        # --- Set core pipeline variables from appConfig ---
         Write-Host "##vso[task.setvariable variable=appName]$($appConfig.appName)"
         Write-Host "##vso[task.setvariable variable=repoName]$($appConfig.repoName)"
-        Write-Host "##vso[task.setvariable variable=repoUrl]$($appConfig.repoUrl)"
         Write-Host "##vso[task.setvariable variable=solutionPath]$($appConfig.solutionPath)"
         Write-Host "##vso[task.setvariable variable=testProjectPath]$($appConfig.testProjectPath)"
         Write-Host "##vso[task.setvariable variable=techStack]$($appConfig.techStack)"
-        Write-Host "##vso[task.setvariable variable=buildTool]$($appConfig.buildTool)"
         Write-Host "##vso[task.setvariable variable=azureSubscriptionServiceConnection]$($appConfig.azureSubscriptionServiceConnection)"
         Write-Host "##vso[task.setvariable variable=agentPoolName]$($appConfig.agentPoolName)"
+        Write-Host "##vso[task.setvariable variable=enableCI]$($appConfig.enableCI)"
+        Write-Host "##vso[task.setvariable variable=enableCD]$($appConfig.enableCD)"
+        Write-Host "##vso[task.setvariable variable=containerRegistryServiceConnection]$($appConfig.containerRegistryServiceConnection)"
 
+        # --- Process environment-specific deployment options ---
         $environments = @("dev", "qa", "prod")
-
-        # Iterate through defined environments (dev, qa, prod) to extract deployment details.
         foreach ($env in $environments) {
             $envConfig = $appConfig.environments.$env
-            $selectedDeployment = $null
-            $deploymentType = ""
+            if ($envConfig) {
+                $enabledDeploymentOption = $envConfig.deploymentOptions | Where-Object { $_.enabled } | Select-Object -First 1
 
-            # Determine the single enabled deployment option for the current environment.
-            foreach ($optionKey in $envConfig.deploymentOptions.PSObject.Properties.Name) {
-                $option = $envConfig.deploymentOptions.$optionKey
-                if ($option.enabled -eq $true) {
-                    if ($selectedDeployment -ne $null) {
-                        Write-Error "Error: Multiple deployment options enabled for $env environment. Please enable only one."
-                        exit 1
+                if ($enabledDeploymentOption) {
+                    $deploymentType = $enabledDeploymentOption.type
+                    Write-Host "##vso[task.setvariable variable=${env}DeploymentType]$deploymentType"
+                    Write-Host "Set pipeline variable '${env}DeploymentType' to: $deploymentType"
+
+                    foreach ($prop in $enabledDeploymentOption.PSObject.Properties) {
+                        if ($prop.Name -ne 'type' -and $prop.Name -ne 'enabled') {
+                            Write-Host "##vso[task.setvariable variable=${env}$($prop.Name)]$($prop.Value)"
+                            Write-Host "Set pipeline variable '${env}$($prop.Name)' to: $($prop.Value)"
+                        }
                     }
-                    $selectedDeployment = $option
-                    $deploymentType = $optionKey
+                } else {
+                    Write-Host "##vso[task.setvariable variable=${env}DeploymentType]none"
+                    Write-Host "No deployment option enabled for environment: $env"
                 }
+            } else {
+                Write-Host "No configuration found for environment: $env"
+                Write-Host "##vso[task.setvariable variable=${env}DeploymentType]none"
             }
-
-            if ($selectedDeployment -eq $null) {
-                Write-Warning "No deployment option explicitly enabled for $env environment. This environment might be skipped."
-                # Assign a dummy deployment type if none is enabled to prevent errors in subsequent variable assignments.
-                $deploymentType = "none"
-            }
-
-            Write-Host "Configuring $env environment for deployment type: $deploymentType"
-            # Set environment-specific variables, making them accessible to the generated YAML.
-            Write-Host "##vso[task.setvariable variable=${env}AppUrlForTests]$($envConfig.appUrlForTests)"
-            Write-Host "##vso[task.setvariable variable=${env}DeploymentType]$deploymentType"
-
-            # Dynamically set parameters for the selected deployment option.
-            # Initialize with empty strings to ensure variables always exist, even if not applicable.
-            $params = @{
-                AppServiceName = ''
-                TargetOS = ''
-                AppServicePlanName = ''
-                AppServerName = ''
-                WinRmServiceConnection = ''
-                SshServiceConnection = ''
-                RemotePath = ''
-                K8sServiceConnection = ''
-                K8sNamespace = ''
-                ImageName = ''
-                ImageTag = ''
-            }
-            if ($selectedDeployment) {
-                $selectedDeployment.PSObject.Properties | ForEach-Object {
-                    if ($params.ContainsKey($_.Name)) {
-                        $params[$_.Name] = $_.Value
-                    }
-                }
-            }
-
-            # Set specific deployment option variables for the current environment.
-            Write-Host "##vso[task.setvariable variable=${env}AppServiceName]$($params.AppServiceName)"
-            Write-Host "##vso[task.setvariable variable=${env}TargetOS]$($params.TargetOS)"
-            Write-Host "##vso[task.setvariable variable=${env}AppServicePlanName]$($params.AppServicePlanName)"
-            Write-Host "##vso[task.setvariable variable=${env}AppServerName]$($params.AppServerName)"
-            Write-Host "##vso[task.setvariable variable=${env}WinRmServiceConnection]$($params.WinRmServiceConnection)"
-            Write-Host "##vso[task.setvariable variable=${env}SshServiceConnection]$($params.SshServiceConnection)"
-            Write-Host "##vso[task.setvariable variable=${env}RemotePath]$($params.RemotePath)"
-            Write-Host "##vso[task.setvariable variable=${env}K8sServiceConnection]$($params.K8sServiceConnection)"
-            Write-Host "##vso[task.setvariable variable=${env}K8sNamespace]$($params.K8sNamespace)"
-            Write-Host "##vso[task.setvariable variable=${env}ImageName]$($params.ImageName)"
-            Write-Host "##vso[task.setvariable variable=${env}ImageTag]$($params.ImageTag)"
         }
 
-        Write-Host "Configuration loaded successfully."
+        # --- Git Operations: Clone, Generate Files, Commit, Push ---
+        $repoUrl = "https://$(System.CollectionUri)$(System.TeamProject)/_git/$(repoName)"
+        $tempRepoPath = "$(Agent.TempDirectory)/$(repoName)"
+        Write-Host "Cloning repository $repoUrl to $tempRepoPath"
+        git config --global user.email "azuredevops@yourcompany.com"
+        git config --global user.name "Azure DevOps Automation"
+        git clone $repoUrl $tempRepoPath -b main # Assuming main branch
 
-        # Assign variables to local PowerShell scope for easier use in script.
-        $appName = "$(appName)"
-        $repoName = "$(repoName)"
-        $repoUrl = "$(repoUrl)"
-        $solutionPath = "$(solutionPath)"
-        $testProjectPath = "$(testProjectPath)"
-        $techStack = "$(techStack)"
-        $buildTool = "$(buildTool)"
-        $azureSubscription = "$(azureSubscriptionServiceConnection)"
-        $agentPool = "$(agentPoolName)"
-        $platformRepoName = "$(platformRepoName)"
-        $platformRepoUrl = "$(platformRepoUrl)"
-        $platformTemplatePath = "$(platformTemplatePath)"
-        $appPipelineYamlPath = "$(appPipelineYamlPath)"
-        $appParamsJsonPath = "$(appParamsJsonPath)"
+        Set-Location $tempRepoPath
 
-        # Collect all environment-specific variables.
-        $devAppUrl = "$(devAppUrlForTests)"
-        $devDeploymentType = "$(devDeploymentType)"
-        $devAppService = "$(devAppServiceName)"
-        $devTargetOS = "$(devTargetOS)"
-        $devAppServicePlan = "$(devAppServicePlanName)"
-        $devAppServer = "$(devAppServerName)"
-        $devWinRm = "$(devWinRmServiceConnection)"
-        $devSsh = "$(devSshServiceConnection)"
-        $devRemote = "$(devRemotePath)"
-        $devK8sConn = "$(devK8sServiceConnection)"
-        $devK8sNs = "$(devK8sNamespace)"
-        $devImage = "$(devImageName)"
-        $devImageT = "$(devImageTag)"
+        # Create .azuredevops directory if it doesn't exist
+        $azureDevopsDir = Join-Path $tempRepoPath ".azuredevops"
+        if (-not (Test-Path $azureDevopsDir)) {
+            New-Item -ItemType Directory -Path $azureDevopsDir
+            Write-Host "Created directory: $azureDevopsDir"
+        }
 
-        $qaAppUrl = "$(qaAppUrlForTests)"
-        $qaDeploymentType = "$(qaDeploymentType)"
-        $qaAppService = "$(qaAppServiceName)"
-        $qaTargetOS = "$(qaTargetOS)"
-        $qaAppServicePlan = "$(qaAppServicePlanName)"
-        $qaAppServer = "$(qaAppServerName)"
-        $qaWinRm = "$(qaWinRmServiceConnection)"
-        $qaSsh = "$(qaSshServiceConnection)"
-        $qaRemote = "$(qaRemotePath)"
-        $qaK8sConn = "$(qaK8sServiceConnection)"
-        $qaK8sNs = "$(qaK8sNamespace)"
-        $qaImage = "$(qaImageName)"
-        $qaImageT = "$(qaImageTag)"
-
-        $prodAppUrl = "$(prodAppUrlForTests)"
-        $prodDeploymentType = "$(prodDeploymentType)"
-        $prodAppService = "$(prodAppServiceName)"
-        $prodTargetOS = "$(prodTargetOS)"
-        $prodAppServicePlan = "$(prodAppServicePlanName)"
-        $prodAppServer = "$(prodAppServerName)"
-        $prodWinRm = "$(prodWinRmServiceConnection)"
-        $prodSsh = "$(prodSshServiceConnection)"
-        $prodRemote = "$(prodRemotePath)"
-        $prodK8sConn = "$(prodK8sServiceConnection)"
-        $prodK8sNs = "$(prodK8sNamespace)"
-        $prodImage = "$(prodImageName)"
-        $prodImageT = "$(prodImageTag)"
-
-
-        Write-Host "--- Starting Onboarding for Application: $appName ---"
-        Write-Host "Application Repo URL: $repoUrl"
-
-        # Extract Azure DevOps project name from the repository URL.
-        $projectUrlParts = $repoUrl.Split('/')
-        $projectName = $projectUrlParts[$projectUrlParts.Count - 4] # Assumes typical ADO URL structure.
-        Write-Host "Detected ADO Project Name: $projectName"
-
-        # Clone the application's repository locally to make changes.
-        $cloneDir = "temp_app_repo"
-        git clone $repoUrl $cloneDir
-        Set-Location $cloneDir # Change directory to the cloned repo.
-
-        Write-Host "Creating/Updating .azuredevops folder and azure-pipelines.yml stub..."
-        $azureDevOpsDir = ".azuredevops"
-        if (!(Test-Path $azureDevOpsDir)) { New-Item -ItemType Directory -Path $azureDevOpsDir }
-
-        # Construct the content of the application's azure-pipelines.yml file.
-        # This YAML extends the shared template and passes all necessary parameters.
-        $yamlContent = @"
-# This file is managed by the Platform Automation team.
-# Do not edit directly unless you understand the implications of template extension.
+        # Generate azure-pipelines.yml
+        $pipelineYamlContent = @"
+# File: .azuredevops/azure-pipelines.yml
+# Generated by PlatformAutomation/meta-pipeline.yml - DO NOT EDIT MANUALLY
+# To make changes, update configs/${{ parameters.appConfigFilePath | Split-Path -Leaf }} in the PlatformAutomation repo.
 
 trigger:
-  # Defines pipeline triggers for the application's repository.
-  batch: true
   branches:
     include:
-    - main
-    - features/*
-    - bugfixes/*
+      - main
   paths:
-    exclude:
-    - config/params.json # Exclude config changes from triggering CI/CD
-
-pr:
-  # Defines PR triggers for the application's repository.
-  branches:
     include:
-    - main
-    - features/*
-    - bugfixes/*
+      - '*' # Trigger on any change to the app repo
 
 resources:
-  # Defines repositories that this pipeline depends on (i.e., the platform templates repo).
   repositories:
-    - repository: platform_templates
+    - repository: platform_templates # Alias for the PlatformAutomation repo
       type: git
-      # Dynamically constructs the reference to the platform automation repository.
-      name: $($platformRepoUrl.Replace("https://dev.azure.com/", "").Replace("/_git/$platformRepoName", ""))/$(platformRepoName)
-      ref: main # Reference the 'main' branch of the platform templates.
+      name: $(System.TeamProject)/PlatformAutomation # Adjust if your PlatformAutomation repo is in another project
+      ref: main
 
 extends:
-  # Extends the core CI/CD template from the platform_templates repository.
-  template: $($platformTemplatePath)@platform_templates
+  template: templates/dotnet-ci-cd.yml@platform_templates
   parameters:
-    # Pass all extracted application configuration parameters to the template.
-    appName: '$appName'
-    solutionPath: '$solutionPath'
-    testProjectPath: '$testProjectPath'
-    techStack: '$techStack'
-    buildTool: '$buildTool'
-    azureSubscriptionServiceConnection: '$azureSubscription'
-    agentPoolName: '$agentPool'
-    enableCI: true                # Default: CI (Build & Test) execution is enabled.
-    enableCD: false               # Default: CD (Deployment) steps are disabled.
-                                  # This can be changed manually in the app's pipeline later.
+    appName: '$(appName)'
+    repoName: '$(repoName)'
+    solutionPath: '$(solutionPath)'
+    testProjectPath: '$(testProjectPath)'
+    techStack: '$(techStack)'
+    azureSubscriptionServiceConnection: '$(azureSubscriptionServiceConnection)'
+    agentPoolName: '$(agentPoolName)'
+    containerRegistryServiceConnection: '$(containerRegistryServiceConnection)'
+    enableCI: '$(enableCI)'
+    enableCD: '$(enableCD)'
 
-    # Environment-specific parameters for Dev.
-    devAppUrlForTests: '$devAppUrl'
-    devDeploymentType: '$devDeploymentType'
-    devAppServiceName: '$devAppService'
-    devTargetOS: '$devTargetOS'
-    devAppServicePlanName: '$devAppServicePlan'
-    devAppServerName: '$devAppServer'
-    devWinRmServiceConnection: '$devWinRm'
-    devSshServiceConnection: '$devSsh'
-    devRemotePath: '$devRemote'
-    devK8sServiceConnection: '$devK8sConn'
-    devK8sNamespace: '$devK8sNs'
-    devImageName: '$devImage'
-    devImageTag: '$devImageT'
+    # Dev Environment Params
+    devDeploymentType: '$(devDeploymentType)'
+    devAppServiceName: '$(devAppServiceName)'
+    devResourceGroupName: '$(devResourceGroupName)'
+    devAppUrlForTests: '$(devAppUrlForTests)'
+    devAppServerName: '$(devAppServerName)'
+    devWinRmServiceConnection: '$(devWinRmServiceConnection)'
+    devRemotePath: '$(devRemotePath)'
+    devK8sImageName: '$(devK8sImageName)'
+    devK8sNamespace: '$(devK8sNamespace)'
+    devK8sDeploymentName: '$(devK8sDeploymentName)'
+    devK8sServiceConnection: '$(devK8sServiceConnection)'
+    devK8sContainerPort: '$(devK8sContainerPort)'
 
-    # Environment-specific parameters for QA.
-    qaAppUrlForTests: '$qaAppUrl'
-    qaDeploymentType: '$qaDeploymentType'
-    qaAppServiceName: '$qaAppService'
-    qaTargetOS: '$qaTargetOS'
-    qaAppServicePlanName: '$qaAppServicePlan'
-    qaAppServerName: '$qaAppServer'
-    qaWinRmServiceConnection: '$qaWinRm'
-    qaSshServiceConnection: '$qaSsh'
-    qaRemotePath: '$qaRemote'
-    qaK8sServiceConnection: '$qaK8sConn'
-    qaK8sNamespace: '$qaK8sNs'
-    qaImageName: '$qaImage'
-    qaImageTag: '$qaImageT'
+    # QA Environment Params
+    qaDeploymentType: '$(qaDeploymentType)'
+    qaAppServiceName: '$(qaAppServiceName)'
+    qaResourceGroupName: '$(qaResourceGroupName)'
+    qaAppUrlForTests: '$(qaAppUrlForTests)'
+    qaAppServerName: '$(qaAppServerName)'
+    qaWinRmServiceConnection: '$(qaWinRmServiceConnection)'
+    qaRemotePath: '$(qaRemotePath)'
+    qaK8sImageName: '$(qaK8sImageName)'
+    qaK8sNamespace: '$(qaK8sNamespace)'
+    qaK8sDeploymentName: '$(qaK8sDeploymentName)'
+    qaK8sServiceConnection: '$(qaK8sServiceConnection)'
+    qaK8sContainerPort: '$(qaK8sContainerPort)'
 
-    # Environment-specific parameters for Prod.
-    prodAppUrlForTests: '$prodAppUrl'
-    prodDeploymentType: '$prodDeploymentType'
-    prodAppServiceName: '$prodAppService'
-    prodTargetOS: '$prodTargetOS'
-    prodAppServicePlanName: '$prodAppServicePlan'
-    prodAppServerName: '$prodAppServer'
-    prodWinRmServiceConnection: '$prodWinRm'
-    prodSshServiceConnection: '$prodSsh'
-    prodRemotePath: '$prodRemote'
-    prodK8sServiceConnection: '$prodK8sConn'
-    prodK8sNamespace: '$prodK8sNs'
-    prodImageName: '$prodImage'
-    prodImageTag: '$prodImageT'
+    # Prod Environment Params
+    prodDeploymentType: '$(prodDeploymentType)'
+    prodAppServiceName: '$(prodAppServiceName)'
+    prodResourceGroupName: '$(prodResourceGroupName)'
+    prodAppUrlForTests: '$(prodAppUrlForTests)'
+    prodAppServerName: '$(prodAppServerName)'
+    prodWinRmServiceConnection: '$(prodWinRmServiceConnection)'
+    prodRemotePath: '$(prodRemotePath)'
+    prodK8sImageName: '$(prodK8sImageName)'
+    prodK8sNamespace: '$(prodK8sNamespace)'
+    prodK8sDeploymentName: '$(prodK8sDeploymentName)'
+    prodK8sServiceConnection: '$(prodK8sServiceConnection)'
+    prodK8sContainerPort: '$(prodK8sContainerPort)'
 "@
-        $yamlContent | Out-File -FilePath $appPipelineYamlPath -Encoding UTF8
 
-        Write-Host "Creating/Updating config/params.json..."
-        $configDir = "config"
-        if (!(Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir }
+        Set-Content -Path (Join-Path $azureDevopsDir "azure-pipelines.yml") -Value $pipelineYamlContent
+        Write-Host "Generated .azuredevops/azure-pipelines.yml"
 
-        # Create a params.json file in the application's repository.
-        # This file can be used by the application's own scripts or services
-        # to read configuration that was defined during onboarding.
-        $paramsJsonContent = @{
-            appName = $appName
-            repoName = $repoName
-            solutionPath = $solutionPath
-            testProjectPath = $testProjectPath
-            techStack = $techStack
-            buildTool = $buildTool
-            azureSubscriptionServiceConnection = $azureSubscription
-            environment = "Development" # Example static parameter
-            buildConfiguration = "Release" # Example static parameter
-
-            # Include all environment-specific details as nested objects.
-            dev = @{
-                appUrlForTests = $devAppUrl
-                deploymentType = $devDeploymentType
-                appServiceName = $devAppService
-                targetOS = $devTargetOS
-                appServicePlanName = $devAppServicePlan
-                appServerName = $devAppServer
-                winRmServiceConnection = $devWinRm
-                sshServiceConnection = $devSsh
-                remotePath = $devRemote
-                kubernetesServiceConnection = $devK8sConn
-                k8sNamespace = $devK8sNs
-                imageName = $devImage
-                imageTag = $devImageT
-            }
-            qa = @{
-                appUrlForTests = $qaAppUrl
-                deploymentType = $qaDeploymentType
-                appServiceName = $qaAppService
-                targetOS = $qaTargetOS
-                appServicePlanName = $qaAppServicePlan
-                appServerName = $qaAppServer
-                winRmServiceConnection = $qaWinRm
-                sshServiceConnection = $qaSsh
-                remotePath = $qaRemote
-                kubernetesServiceConnection = $qaK8sConn
-                k8sNamespace = $qaK8sNs
-                imageName = $qaImage
-                imageTag = $qaImageT
-            }
-            prod = @{
-                appUrlForTests = $prodAppUrl
-                deploymentType = $prodDeploymentType
-                appServiceName = $prodAppService
-                targetOS = $prodTargetOS
-                appServicePlanName = $prodAppServicePlan
-                appServerName = $prodAppServer
-                winRmServiceConnection = $prodWinRm
-                sshServiceConnection = $prodSsh
-                remotePath = $prodRemote
-                kubernetesServiceConnection = $prodK8sConn
-                k8sNamespace = $prodK8sNs
-                imageName = $prodImage
-                imageTag = $prodImageT
-            }
-        } | ConvertTo-Json -Depth 10 -Compress # Convert to JSON, formatted for readability.
-
-        $paramsJsonContent | Out-File -FilePath $appParamsJsonPath -Encoding UTF8
-
-        # Git operations to commit and push the newly generated/updated files.
-        git config user.email "azure-devops-platform@yourcompany.com"
-        git config user.name "Azure DevOps Platform Automation"
-        git add . # Stage all changes.
-        git commit -m "feat: Initial CI/CD pipeline setup by Platform Automation" # Commit with a clear message.
-        git push origin main # Push changes to the application's main branch.
-
-        Write-Host "Files committed and pushed to application repository."
-        Set-Location .. # Change back to the meta-pipeline's repo directory.
-
-        Write-Host "Creating/Updating Azure DevOps pipeline definition..."
-        $pipelineName = "$appName-CI-CD" # Name for the Azure DevOps pipeline definition.
-        # Check if a pipeline with this name already exists.
-        $pipelineId = az pipelines show --name "$pipelineName" --project "$projectName" --query "id" -o tsv 2>$null
-
-        if (-not $pipelineId) {
-            Write-Host "Pipeline '$pipelineName' does not exist. Creating..."
-            # Create a new pipeline definition.
-            az pipelines create `
-              --name "$pipelineName" `
-              --repository "$repoName" `
-              --branch "main" `
-              --yaml-path "$appPipelineYamlPath" `
-              --project "$projectName" `
-              --query "id" -o tsv
-        } else {
-            Write-Host "Pipeline '$pipelineName' already exists (ID: $pipelineId). Updating..."
-            # Update an existing pipeline definition.
-            az pipelines update `
-              --name "$pipelineName" `
-              --yaml-path "$appPipelineYamlPath" `
-              --project "$projectName"
+        # Create config directory if it doesn't exist
+        $configDir = Join-Path $tempRepoPath "config"
+        if (-not (Test-Path $configDir)) {
+            New-Item -ItemType Directory -Path $configDir
+            Write-Host "Created directory: $configDir"
         }
 
-        Write-Host "Azure DevOps pipeline definition created/updated."
+        # Generate params.json
+        $paramsJsonContent = @{
+            appName = $appConfig.appName;
+            repoName = $appConfig.repoName;
+            solutionPath = $appConfig.solutionPath;
+            testProjectPath = $appConfig.testProjectPath;
+            buildConfiguration = "Release"; # Default for params.json, can be overridden if needed
+            appEnvironment = "Development"; # Default for params.json, intended to be set by environment var
+            # Add any other config values the *application* needs at runtime/build-time
+            # For example, if you want appUrlForTests also in params.json for direct app/script consumption:
+            # devAppUrlForTests = $appConfig.environments.dev.deploymentOptions | Where-Object { $_.enabled } | Select-Object -ExpandProperty appUrlForTests
+        } | ConvertTo-Json -Depth 5 -Compress
 
-        Write-Host "Registering '% Apps Onboarded' KPI..."
-        # Example of pushing metrics to an external monitoring system.
-        $onboardingBody = @{
-            ApplicationName = $appName
-            OnboardingStatus = "Succeeded"
-            OnboardingTimestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
-            OnboardedByPipeline = "$(Build.DefinitionName)"
-            OnboardedByRunId = "$(Build.BuildId)"
-        } | ConvertTo-Json -Depth 10
-        Write-Host "Pushing onboarding metric: $($onboardingBody | ConvertTo-Json)"
-        # Invoke-RestMethod -Uri "https://your.monitoring.api/registerOnboarding" ...
+        Set-Content -Path (Join-Path $configDir "params.json") -Value $paramsJsonContent
+        Write-Host "Generated config/params.json"
 
-        Write-Host "--- Onboarding for Application: $appName Complete! ---"
+        # Commit and Push
+        git add .
+        git commit -m "chore(platform): Onboard/Update CI/CD pipeline for $(appName) [skip ci]" # skip ci to prevent trigger loops
+        $PAT = "$(System.AccessToken)"
+        $B64_PAT = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("PAT:$PAT"))
+        $repoUrlWithAuth = $repoUrl -replace "https://", "https://oauth2:$($B64_PAT)@"
+        git push $repoUrlWithAuth main
+        Write-Host "Committed and pushed changes to $(repoName) main branch."
+
+        # --- Create/Update Azure DevOps Pipeline Definition ---
+        $pipelineName = "$(appName)-CI-CD"
+        $projectUrl = "$(System.CollectionUri)$(System.TeamProject)"
+
+        Write-Host "Checking for existing pipeline definition for $pipelineName..."
+        try {
+            $existingPipeline = az pipelines show --name "$pipelineName" --project "$(System.TeamProject)" --query "id" -o tsv --only-show-errors
+            if ($existingPipeline) {
+                Write-Host "Pipeline '$pipelineName' already exists (ID: $existingPipeline). Updating it."
+                az pipelines update --name "$pipelineName" --yaml-path "$tempRepoPath/.azuredevops/azure-pipelines.yml" --repository "$repoName" --branch "main" --project "$(System.TeamProject)" --only-show-errors
+            }
+            else {
+                Write-Host "Pipeline '$pipelineName' does not exist. Creating new pipeline."
+                az pipelines create --name "$pipelineName" --yaml-path "$tempRepoPath/.azuredevops/azure-pipelines.yml" --repository "$repoName" --branch "main" --project "$(System.TeamProject)" --only-show-errors
+            }
+            Write-Host "Azure DevOps pipeline definition for '$pipelineName' is up-to-date."
+        }
+        catch {
+            Write-Error "Failed to create/update Azure DevOps pipeline definition: $($_.Exception.Message)"
+            exit 1
+        }
+
+        # --- Register KPI (Placeholder) ---
+        # This is where you might make an API call to an internal system
+        # to register that an application has been successfully onboarded/updated.
+        Write-Host "Registering KPI for onboarded application $($appConfig.appName)... (Placeholder)"
     env:
-      AZURE_DEVOPS_EXT_PAT: $(System.AccessToken) # Use the pipeline's access token for ADO CLI authentication.
+      AZURE_DEVOPS_EXT_PAT: $(System.AccessToken) # Pass PAT for az CLI auth

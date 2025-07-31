@@ -1,0 +1,135 @@
+# File: PlatformAutomation/templates/shared/deploy-app.yml
+# Shared template for deployment logic to various environment types
+
+parameters:
+- name: environmentName
+  type: string
+- name: deploymentType
+  type: string
+- name: appServiceName
+  type: string
+  default: ''
+- name: resourceGroupName
+  type: string
+  default: ''
+- name: azureSubscriptionServiceConnection
+  type: string
+  default: ''
+- name: appUrlForTests
+  type: string
+  default: ''
+- name: appServerName
+  type: string
+  default: ''
+- name: winRmServiceConnection
+  type: string
+  default: ''
+- name: remotePath
+  type: string
+  default: ''
+- name: k8sImageName
+  type: string
+  default: ''
+- name: k8sNamespace
+  type: string
+  default: ''
+- name: k8sDeploymentName
+  type: string
+  default: ''
+- name: k8sServiceConnection
+  type: string
+  default: ''
+- name: k8sContainerPort
+  type: number
+  default: 80
+
+steps:
+# --- Azure Web App Deployment ---
+- ${{ if eq(parameters.deploymentType, 'azureWebApp') }}:
+  - task: AzureRmWebAppDeployment@4
+    displayName: 'Deploy to Azure Web App - ${{ parameters.environmentName }}'
+    inputs:
+      ConnectionType: 'AzureRM'
+      azureSubscription: '${{ parameters.azureSubscriptionServiceConnection }}'
+      appType: 'webApp'
+      WebAppName: '${{ parameters.appServiceName }}'
+      ResourceGroupName: '${{ parameters.resourceGroupName }}'
+      packageForDeploy: '$(Pipeline.Workspace)/BackendWebApp/BackendWebApp.zip' # Path to published artifact
+
+  - task: PowerShell@2
+    displayName: 'Run Post-Deployment Tests/Checks for Azure Web App - ${{ parameters.environmentName }}'
+    inputs:
+      targetType: 'inline'
+      script: |
+        Write-Host "Running post-deployment tests for ${{ parameters.environmentName }} at ${{ parameters.appUrlForTests }}"
+        # Add actual health check or API tests here, e.g., using Invoke-RestMethod
+        # Example: Invoke-RestMethod -Uri "${{ parameters.appUrlForTests }}/health"
+    condition: and(succeeded(), ne('${{ parameters.appUrlForTests }}', ''))
+
+# --- On-Premise FCI (File Copy Installation) Deployment ---
+- ${{ if eq(parameters.deploymentType, 'onPremiseFCI') }}:
+  - task: PowerShellOnTargetMachines@3
+    displayName: 'Deploy to On-Premise FCI - ${{ parameters.environmentName }}'
+    inputs:
+      Machines: '${{ parameters.appServerName }}'
+      # Assuming you have a WinRM Service Connection setup for your on-prem server
+      serviceEndpoint: '${{ parameters.winRmServiceConnection }}'
+      ScriptType: 'Inline'
+      InlineScript: |
+        # Ensure the remote path exists and is clean
+        $remotePath = "${{ parameters.remotePath }}"
+        if (-not (Test-Path $remotePath)) {
+            New-Item -ItemType Directory -Path $remotePath -Force
+        } else {
+            Remove-Item -Path "$remotePath\*" -Recurse -Force
+        }
+        Write-Host "Cleaned remote path: $remotePath"
+
+        # Copy application files
+        # The artifact is downloaded to $(Pipeline.Workspace)/BackendWebApp
+        Copy-Item -Path "$(Pipeline.Workspace)\BackendWebApp\*" -Destination $remotePath -Recurse -Force
+        Write-Host "Copied application files to $remotePath"
+
+        # Recycle IIS Application Pool (adjust pool name as needed)
+        try {
+            Import-Module WebAdministration
+            $appPoolName = "YourAppPoolName" # Replace with your actual IIS App Pool Name
+            if (Get-WebAppPoolState $appPoolName | Select-Object -ExpandProperty Value -eq "Started") {
+                Stop-WebAppPool $appPoolName
+                Start-WebAppPool $appPoolName
+                Write-Host "Recycled IIS Application Pool: $appPoolName"
+            } else {
+                Start-WebAppPool $appPoolName
+                Write-Host "Started IIS Application Pool: $appPoolName"
+            }
+        }
+        catch {
+            Write-Warning "Could not recycle IIS App Pool. Ensure IIS Management cmdlets are installed and App Pool '$appPoolName' exists. Error: $($_.Exception.Message)"
+        }
+      # Set up output variables for any post-deployment checks if needed
+      # e.g., "Write-Host '##vso[task.setvariable variable=DeployedAppUrl]http://$((parameters.appServerName)/YourApp)'"
+
+# --- OpenShift/Kubernetes Deployment ---
+- ${{ if eq(parameters.deploymentType, 'openShift') }}:
+  - task: KubernetesManifest@1 # Or OpenShift@x if you have the dedicated extension
+    displayName: 'Deploy to Kubernetes/OpenShift - ${{ parameters.environmentName }}'
+    inputs:
+      action: 'deploy'
+      kubernetesServiceConnection: '${{ parameters.k8sServiceConnection }}'
+      namespace: '${{ parameters.k8sNamespace }}'
+      manifests: |
+        $(Build.SourcesDirectory)/k8s/deployment.yaml # Assuming your k8s manifests are here
+        $(Build.SourcesDirectory)/k8s/service.yaml
+      containers: |
+        ${{ parameters.k8sImageName }} # The image to use for the deployment
+
+  - task: PowerShell@2
+    displayName: 'Run Post-Deployment Tests/Checks for Kubernetes - ${{ parameters.environmentName }}'
+    inputs:
+      targetType: 'inline'
+      script: |
+        Write-Host "Running post-deployment tests for Kubernetes deployment in ${{ parameters.environmentName }}"
+        # Add kubectl/oc commands here for health checks or endpoint verification
+        # Example: az aks get-credentials --resource-group YourRg --name YourClusterName --overwrite-existing
+        # kubectl get pods -n ${{ parameters.k8sNamespace }} -l app=${{ parameters.k8sDeploymentName }}
+    condition: and(succeeded(), ne('${{ parameters.k8sNamespace }}', ''))
